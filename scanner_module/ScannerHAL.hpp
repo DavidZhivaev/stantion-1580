@@ -2,6 +2,7 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <string>
+#include <cstring>
 #include <vector>
 #include <array>
 #include <concepts>
@@ -264,6 +265,37 @@ class alignas(64) LinuxSaneScanner final {
 private:
 	SaneHandle m_handle{};
 
+	bool SetSaneOption(const char* optionName, const void* value) {
+		if (!m_handle.IsValid()) return false;
+
+		const SANE_Option_Descriptor* desc{nullptr};
+		SANE_Int numOptions{0};
+		sane_control_option(m_handle.Get(), 0, SANE_ACTION_GET_VALUE, &numOptions, nullptr);
+
+		for (SANE_Int i = 1; i < numOptions; ++i) {
+			desc = sane_get_option_descriptor(m_handle.Get(), i);
+			if (desc && desc->name && std::strcmp(desc->name, optionName) == 0) {
+				SANE_Int info{0};
+				if (sane_control_option(m_handle.Get(), i, SANE_ACTION_SET_VALUE,
+					const_cast<void*>(value), &info) == SANE_STATUS_GOOD) {
+					std::cout << "[SANE] Set " << optionName << " successfully\n";
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	void EnableDuplex() {
+		// Try common duplex option names used by different SANE backends
+		SANE_Bool duplexOn = SANE_TRUE;
+		if (SetSaneOption("duplex", &duplexOn)) return;
+		if (SetSaneOption("adf-mode", "Duplex")) return;
+		if (SetSaneOption("source", "ADF Duplex")) return;
+		if (SetSaneOption("scan-source", "ADF Duplex")) return;
+		std::cout << "[SANE] Duplex option not found or not supported\n";
+	}
+
 public:
 	constexpr LinuxSaneScanner() noexcept = default;
 
@@ -313,6 +345,7 @@ public:
 		}
 
 		m_handle.Set(handle, true);
+		EnableDuplex();
 		return true;
 	}
 
@@ -331,14 +364,21 @@ public:
 			SANE_Parameters params{};
 			sane_get_parameters(m_handle.Get(), &params);
 
+			// Handle unknown line count (params.lines == -1) for ADF scanners
 			std::vector<SANE_Byte> heapBuffer{};
-			heapBuffer.resize(static_cast<size_t>(params.bytes_per_line) * static_cast<size_t>(params.lines));
+			const bool unknownLines = (params.lines <= 0);
+			if (!unknownLines) {
+				heapBuffer.resize(static_cast<size_t>(params.bytes_per_line) * static_cast<size_t>(params.lines));
+			}
 
 			size_t memoryOffset{0};
 			constexpr SANE_Int maxChunkSize{32 * 1024};
 			SANE_Int processedBytes{0};
 
 			while (true) {
+				if (unknownLines) {
+					heapBuffer.resize(memoryOffset + maxChunkSize);
+				}
 				status = sane_read(m_handle.Get(), heapBuffer.data() + memoryOffset, maxChunkSize, &processedBytes);
 				if (status == SANE_STATUS_EOF || processedBytes == 0) [[unlikely]] {
 					break;
@@ -346,7 +386,15 @@ public:
 				memoryOffset += static_cast<size_t>(processedBytes);
 			}
 
-			cv::Mat linuxRgbFrame{params.lines, params.pixels_per_line, CV_8UC3, heapBuffer.data()};
+			if (memoryOffset == 0 || params.bytes_per_line <= 0) [[unlikely]] {
+				continue;
+			}
+
+			const int actualLines = unknownLines
+				? static_cast<int>(memoryOffset / static_cast<size_t>(params.bytes_per_line))
+				: params.lines;
+
+			cv::Mat linuxRgbFrame{actualLines, params.pixels_per_line, CV_8UC3, heapBuffer.data()};
 			cv::Mat standardBgrFrame{};
 			cv::cvtColor(linuxRgbFrame, standardBgrFrame, cv::COLOR_RGB2BGR);
 
