@@ -633,7 +633,7 @@ class ScanStationApp:
         self._use_twain: bool = False
         self._hw_scanner: Optional[HardwareScanner] = None
         self._use_hal: bool = False
-        self._init_twain()
+        self._init_scanners()
         self.recognizer = Recognizer()
         self.blanks: List[ScannedBlank] = []
         self.zoom = float(self.display_cfg.get("initial_zoom", 1.0))
@@ -652,7 +652,10 @@ class ScanStationApp:
         
         icon_path = get_resource_path("scan.ico")
         if icon_path.exists():
-            self.root.iconbitmap(str(icon_path))
+            try:
+                self.root.iconbitmap(str(icon_path))
+            except tk.TclError:
+                pass  # Skip icon on Linux if not supported
         self.root.title(self.title)
         self.root.minsize(1100, 640)
         self.root.configure(bg=self.ui_cfg.get("background", "#f0f2f5"))
@@ -800,7 +803,10 @@ class ScanStationApp:
         style.configure("Zoom.TButton", font=("Segoe UI", 14, "bold"), width=3, padding=6)
 
     def _maximize_window(self) -> None:
-        self.root.state("zoomed")
+        try:
+            self.root.state("zoomed")  # Windows
+        except tk.TclError:
+            self.root.attributes("-zoomed", True)  # Linux
 
     def _notify_warning(self, title: str, message: str) -> None:
         messagebox.showwarning(title, message, parent=self.root)
@@ -1169,11 +1175,12 @@ class ScanStationApp:
             )
 
         except Exception as exc:
+            err_msg = str(exc)
             self.root.after(
                 0,
-                lambda: self._notify_error(
+                lambda msg=err_msg: self._notify_error(
                     "Сканирование",
-                    str(exc),
+                    msg,
                 ),
             )
 
