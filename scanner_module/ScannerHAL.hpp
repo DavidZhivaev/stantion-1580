@@ -265,6 +265,93 @@ class alignas(64) LinuxSaneScanner final {
 private:
 	SaneHandle m_handle{};
 
+	void PrintAllOptions() {
+		if (!m_handle.IsValid()) return;
+
+		SANE_Int numOptions{0};
+		sane_control_option(m_handle.Get(), 0, SANE_ACTION_GET_VALUE, &numOptions, nullptr);
+
+		std::cout << "[SANE] ===== Available scanner options =====\n";
+		for (SANE_Int i = 1; i < numOptions; ++i) {
+			const SANE_Option_Descriptor* desc = sane_get_option_descriptor(m_handle.Get(), i);
+			if (!desc || !desc->name) continue;
+
+			const char* typeStr = "unknown";
+			switch (desc->type) {
+				case SANE_TYPE_BOOL: typeStr = "BOOL"; break;
+				case SANE_TYPE_INT: typeStr = "INT"; break;
+				case SANE_TYPE_FIXED: typeStr = "FIXED"; break;
+				case SANE_TYPE_STRING: typeStr = "STRING"; break;
+				case SANE_TYPE_BUTTON: typeStr = "BUTTON"; break;
+				case SANE_TYPE_GROUP: typeStr = "GROUP"; break;
+			}
+
+			std::cout << "  [" << i << "] " << desc->name << " (" << typeStr << ")";
+			if (desc->title) std::cout << " - " << desc->title;
+
+			// Print string constraints if available
+			if (desc->type == SANE_TYPE_STRING && desc->constraint_type == SANE_CONSTRAINT_STRING_LIST) {
+				std::cout << "\n      Values: ";
+				for (int j = 0; desc->constraint.string_list[j] != nullptr; ++j) {
+					if (j > 0) std::cout << ", ";
+					std::cout << "\"" << desc->constraint.string_list[j] << "\"";
+				}
+			}
+			std::cout << "\n";
+		}
+		std::cout << "[SANE] ========================================\n";
+	}
+
+	// Try to set option regardless of type - auto-detect and convert
+	bool SetSaneOptionAuto(const char* optionName, const char* stringValue, SANE_Int intValue) {
+		if (!m_handle.IsValid()) return false;
+
+		SANE_Int numOptions{0};
+		sane_control_option(m_handle.Get(), 0, SANE_ACTION_GET_VALUE, &numOptions, nullptr);
+
+		for (SANE_Int i = 1; i < numOptions; ++i) {
+			const SANE_Option_Descriptor* desc = sane_get_option_descriptor(m_handle.Get(), i);
+			if (!desc || !desc->name || std::strcmp(desc->name, optionName) != 0) continue;
+
+			SANE_Int info{0};
+			SANE_Status status = SANE_STATUS_INVAL;
+
+			switch (desc->type) {
+				case SANE_TYPE_BOOL: {
+					SANE_Bool val = (intValue != 0) ? SANE_TRUE : SANE_FALSE;
+					status = sane_control_option(m_handle.Get(), i, SANE_ACTION_SET_VALUE, &val, &info);
+					break;
+				}
+				case SANE_TYPE_INT: {
+					SANE_Int val = intValue;
+					status = sane_control_option(m_handle.Get(), i, SANE_ACTION_SET_VALUE, &val, &info);
+					break;
+				}
+				case SANE_TYPE_FIXED: {
+					SANE_Fixed val = SANE_FIX(intValue);
+					status = sane_control_option(m_handle.Get(), i, SANE_ACTION_SET_VALUE, &val, &info);
+					break;
+				}
+				case SANE_TYPE_STRING: {
+					char buffer[256]{};
+					std::strncpy(buffer, stringValue, sizeof(buffer) - 1);
+					status = sane_control_option(m_handle.Get(), i, SANE_ACTION_SET_VALUE, buffer, &info);
+					break;
+				}
+				default:
+					break;
+			}
+
+			if (status == SANE_STATUS_GOOD) {
+				std::cout << "[SANE] Set " << optionName << " successfully\n";
+				return true;
+			} else {
+				std::cout << "[SANE] Failed to set " << optionName << " (status=" << status << ")\n";
+			}
+		}
+		return false;
+	}
+
 	bool SetSaneOptionBool(const char* optionName, SANE_Bool value) {
 		if (!m_handle.IsValid()) return false;
 
@@ -356,13 +443,41 @@ private:
 	}
 
 	void EnableDuplex() {
-		// Try common duplex option names used by different SANE backends
+		std::cout << "[SANE] Attempting to enable duplex scanning...\n";
+
+		// Try bool options
 		if (SetSaneOptionBool("duplex", SANE_TRUE)) return;
-		if (SetSaneOptionString("adf-mode", "Duplex")) return;
+		if (SetSaneOptionBool("adf-duplex", SANE_TRUE)) return;
+		if (SetSaneOptionBool("both-sides", SANE_TRUE)) return;
+
+		// Try string options with various values
+		// Source selection
 		if (SetSaneOptionString("source", "ADF Duplex")) return;
 		if (SetSaneOptionString("source", "Duplex")) return;
+		if (SetSaneOptionString("source", "ADF Front and Back")) return;
+		if (SetSaneOptionString("source", "ADF")) return;
+
+		// ADF mode selection
+		if (SetSaneOptionString("adf-mode", "Duplex")) return;
+		if (SetSaneOptionString("adf-mode", "Both")) return;
+		if (SetSaneOptionString("adf_mode", "Duplex")) return;
+
+		// Scan source
 		if (SetSaneOptionString("scan-source", "ADF Duplex")) return;
-		std::cout << "[SANE] Duplex option not found or not supported\n";
+		if (SetSaneOptionString("scan-source", "Duplex")) return;
+
+		// Side selection (Canon specific)
+		if (SetSaneOptionString("side", "Duplex")) return;
+		if (SetSaneOptionString("side", "Both")) return;
+		if (SetSaneOptionString("scan-side", "Both")) return;
+
+		// Try auto-detect method
+		if (SetSaneOptionAuto("duplex", "Duplex", 1)) return;
+		if (SetSaneOptionAuto("source", "ADF Duplex", 1)) return;
+
+		std::cout << "[SANE] WARNING: Duplex option not found or not supported!\n";
+		std::cout << "[SANE] Printing all available options for debugging:\n";
+		PrintAllOptions();
 	}
 
 public:
@@ -414,6 +529,11 @@ public:
 		}
 
 		m_handle.Set(handle, true);
+
+		// Print all available options for debugging
+		std::cout << "[SANE] Connected to scanner: " << scannerName << "\n";
+		PrintAllOptions();
+
 		SetResolution(100);
 		SetScanArea(255, 385);  // ~1000x1500 pixels at 100 DPI
 		EnableDuplex();
