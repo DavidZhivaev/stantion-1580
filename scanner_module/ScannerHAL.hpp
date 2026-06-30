@@ -341,6 +341,20 @@ private:
 		std::cout << "[SANE] Resolution option not found\n";
 	}
 
+	void SetScanArea(SANE_Int width_mm, SANE_Int height_mm) {
+		// Set scan area using bottom-right coordinates (top-left is 0,0)
+		// Values are in millimeters
+		SetSaneOptionInt("br-x", width_mm);
+		SetSaneOptionInt("br-y", height_mm);
+		// Also try page size options
+		SetSaneOptionInt("page-width", width_mm);
+		SetSaneOptionInt("page-height", height_mm);
+		// Set top-left to 0
+		SetSaneOptionInt("tl-x", 0);
+		SetSaneOptionInt("tl-y", 0);
+		std::cout << "[SANE] Scan area set to " << width_mm << "x" << height_mm << " mm\n";
+	}
+
 	void EnableDuplex() {
 		// Try common duplex option names used by different SANE backends
 		if (SetSaneOptionBool("duplex", SANE_TRUE)) return;
@@ -401,6 +415,7 @@ public:
 
 		m_handle.Set(handle, true);
 		SetResolution(100);
+		SetScanArea(255, 385);  // ~1000x1500 pixels at 100 DPI
 		EnableDuplex();
 		return true;
 	}
